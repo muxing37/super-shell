@@ -87,31 +87,25 @@ int main() {
                 continue;
             } else if(input[i]=='|' && yinhao==0) {
                 token[j++].type=PIPE;
-                // i++;
                 k=0;
                 continue;
             } else if(input[i]=='<' && yinhao==0) {
                 token[j++].type=REDIR_IN;
-                // i++;
                 k=0;
                 continue;
             } else if(input[i]=='>' && yinhao==0) {
                 token[j++].type=REDIR_OUT;
-                // i++;
                 k=0;
                 continue;
             } else if(input[i]=='&' && yinhao==0) {
                 token[j++].type=BACK;
-                // i++;
                 k=0;
                 continue;
             }
 
             if(input[i]==' ' && yinhao==0) {
-                //token[j].word[k]=0;
                 k=0;
                 if(token[j].word!=NULL) {
-                    // token[j].type=WORD;
                     j++;
                 }
 
@@ -158,24 +152,21 @@ int main() {
             }
         }
 
-        for(i=0;i<token_num;i++) {
-            if(token[i].word!=NULL) printf("%s\n",token[i].word);
-            else printf("NULL\n");
-            printf("%d\n",token[i].type);
-        }
+        // for(i=0;i<token_num;i++) {
+        //     if(token[i].word!=NULL) printf("%s\n",token[i].word);
+        //     else printf("NULL\n");
+        //     printf("%d\n",token[i].type);
+        // }
 
-        for(i=0;i<=j;i++) {
-            printf("cmd%d\n",i+1);
-            for(k=0;k<cmd[i].argc;k++) {
-                printf("%s\n",cmd[i].argv[k]);
-            }
-            if(cmd[i].input_file!=NULL) printf("in %s\n",cmd[i].input_file);
-            if(cmd[i].output_file!=NULL) printf("out %s\n",cmd[i].output_file);
-            printf("\n");
-        }
-
-        
-        // printf("%s\n",input);
+        // for(i=0;i<=j;i++) {
+        //     printf("cmd%d\n",i+1);
+        //     for(k=0;k<cmd[i].argc;k++) {
+        //         printf("%s\n",cmd[i].argv[k]);
+        //     }
+        //     if(cmd[i].input_file!=NULL) printf("in %s\n",cmd[i].input_file);
+        //     if(cmd[i].output_file!=NULL) printf("out %s\n",cmd[i].output_file);
+        //     printf("\n");
+        // }
     }
     return 0;
 }
