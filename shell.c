@@ -155,7 +155,7 @@ struct command *getcmd(struct Token *token,int token_num,int *cmd_num) {
             for(k=0;k<l;k++) {
                 cmd[j].output_file[k]=token[i].word[k];
             }
-            cmd[j].append=1;
+            if(token[i-1].type==REDIR_APPEND) cmd[j].append=1;
         } else if(token[i].type==WORD) {
             if(cmd[j].argv==NULL) cmd[j].argv_alloc=0;
             cmd[j].argv=grow_alloc(cmd[j].argc,&cmd[j].argv_alloc,sizeof(char*),cmd[j].argv);
@@ -185,18 +185,28 @@ int run_cmd(struct command *cmd,int cmd_num) {
         if(pid==0) {
             if(cmd[i].input_file!=NULL) {
                 int fd=open(cmd[i].input_file,O_RDONLY);
-                    if(fd) {
-                        perror("open");
-                        exit(1);
-                    }
+                if(fd==-1) {
+                    perror("open");
+                    exit(1);
+                }
                 dup2(fd, STDIN_FILENO);
                 close(fd);
-            } else if(cmd[i].output_file!=NULL && cmd[i].append==0) {
-                int fd=open(cmd[i].input_file,O_WRONLY | O_CREAT | O_TRUNC,0644);
+            }
+            if(cmd[i].output_file!=NULL && cmd[i].append==0) {
+                int fd=open(cmd[i].output_file,O_WRONLY | O_CREAT | O_TRUNC,0644);
+                if(fd==-1) {
+                    perror("open");
+                    exit(1);
+                }
                 dup2(fd,STDOUT_FILENO);
                 close(fd);
-            } else if(cmd[i].output_file!=NULL && cmd[i].append==1) {
-                int fd=open(cmd[i].input_file,O_WRONLY | O_CREAT | O_APPEND,0644);
+            }
+            if(cmd[i].output_file!=NULL && cmd[i].append==1) {
+                int fd=open(cmd[i].output_file,O_WRONLY | O_CREAT | O_APPEND,0644);
+                if(fd==-1) {
+                    perror("open");
+                    exit(1);
+                }
                 dup2(fd,STDOUT_FILENO);
                 close(fd);
             }
@@ -245,6 +255,7 @@ int main() {
         //     }
         //     if(cmd[i].input_file!=NULL) printf("in %s\n",cmd[i].input_file);
         //     if(cmd[i].output_file!=NULL) printf("out %s\n",cmd[i].output_file);
+        //     printf("%d\n",cmd[i].append);
         //     printf("\n");
         // }
 
