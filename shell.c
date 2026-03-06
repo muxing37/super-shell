@@ -35,9 +35,9 @@ struct Token {
 };
 
 void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
-    if(c>*a-2 || *a==0) {
+    if(c>*a-4 || *a==0) {
         if(*a==0) {
-            *a=4;
+            *a=8;
             g=calloc(*a,size);
         } else {
             g=realloc(g,size*(*a)*2);
@@ -48,109 +48,189 @@ void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
     return g;
 }
 
+struct Token *gettoken(int *token_num) {
+    struct Token *token=NULL;
+    size_t token_alloc=0;
+
+    char *input=NULL;
+    size_t len=0;
+    int l=getline(&input,&len,stdin);
+    if(l==-1) {
+        exit(0);
+    } else if(input[l-1]=='\n') {
+        input[--l]='\0';
+    } else {
+        printf("\n");
+    }
+    int i,j;
+    int k=0;
+    int yinhao=0;
+    for(i=0,j=0;i<l;i++) {
+        token=grow_alloc(j,&token_alloc,sizeof(struct Token),token);
+        if(input[i]=='"') {
+            if(yinhao==0) {
+                yinhao=1;
+                continue;
+            }
+            if(yinhao==1) {
+                yinhao=0;
+                continue;
+            }
+        }
+        if(input[i]=='>' && input[i+1]=='>' && yinhao==0) {
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            token[j++].type=REDIR_APPEND;
+            i++;
+            k=0;
+            continue;
+        } else if(input[i]=='|' && yinhao==0) {
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            token[j++].type=PIPE;
+            k=0;
+            continue;
+        } else if(input[i]=='<' && yinhao==0) {
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            token[j++].type=REDIR_IN;
+            k=0;
+            continue;
+        } else if(input[i]=='>' && yinhao==0) {
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            token[j++].type=REDIR_OUT;
+            k=0;
+            continue;
+        } else if(input[i]=='&' && yinhao==0) {
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            token[j++].type=BACK;
+            k=0;
+            continue;
+        }
+
+        if(input[i]==' ' && yinhao==0) {
+            k=0;
+            if(token[j].word!=NULL) {
+                j++;
+            }
+            continue;
+        }
+        token[j].type=WORD;
+        token[j].word=grow_alloc(k,&token[j].alloc_word,sizeof(char),token[j].word);
+        token[j].word[k]=input[i];
+        k++;
+    }
+    free(input);
+    *token_num=++j;
+    return token;
+}
+
+struct command *getcmd(struct Token *token,int token_num,int *cmd_num) {
+    int i,j,k;
+    struct command *cmd=NULL;
+    size_t cmd_alloc=0;
+    int isls=0;
+    for(i=0,j=0;i<token_num;i++) {
+        cmd=grow_alloc(j,&cmd_alloc,sizeof(struct command),cmd);
+        if(token[i].type==PIPE) {
+            cmd[j].argv[cmd[j].argc]=NULL;
+            j++;
+            isls=0;
+        } else if(token[i].type==REDIR_IN) {
+            int l=strlen(token[++i].word);
+            cmd[j].input_file=calloc(l+1,sizeof(char));
+            for(k=0;k<l;k++) {
+                cmd[j].input_file[k]=token[i].word[k];
+            }
+        } else if(token[i].type==REDIR_OUT || token[i].type==REDIR_APPEND) {
+            int l=strlen(token[++i].word);
+            cmd[j].output_file=calloc(l+1,sizeof(char));
+            for(k=0;k<l;k++) {
+                cmd[j].output_file[k]=token[i].word[k];
+            }
+            cmd[j].append=1;
+        } else if(token[i].type==WORD) {
+            if(cmd[j].argv==NULL) cmd[j].argv_alloc=0;
+            cmd[j].argv=grow_alloc(cmd[j].argc,&cmd[j].argv_alloc,sizeof(char*),cmd[j].argv);
+            k=0;
+            int l=strlen(token[i].word);
+            cmd[j].argv[cmd[j].argc]=calloc(l+1,sizeof(char));
+            for(k=0;k<l;k++) {
+                cmd[j].argv[cmd[j].argc][k]=token[i].word[k];
+            }
+            cmd[j].argc++;
+        }
+        if(!strcmp("ls",cmd[j].argv[0]) && isls==0) {
+            cmd[j].argv[cmd[j].argc]=calloc(16,sizeof(char));
+            strcpy(cmd[j].argv[cmd[j].argc++],"--color=auto");
+            isls=1;
+        }
+    }
+    *cmd_num=++j;
+    return cmd;
+}
+
+int run_cmd(struct command *cmd,int cmd_num) {
+    int i;
+    for(i=0;i<cmd_num;i++) {
+        pid_t pid=fork();
+
+        if(pid==0) {
+            if(cmd[i].input_file!=NULL) {
+                int fd=open(cmd[i].input_file,O_RDONLY);
+                    if(fd) {
+                        perror("open");
+                        exit(1);
+                    }
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+            } else if(cmd[i].output_file!=NULL && cmd[i].append==0) {
+                int fd=open(cmd[i].input_file,O_WRONLY | O_CREAT | O_TRUNC,0644);
+                dup2(fd,STDOUT_FILENO);
+                close(fd);
+            } else if(cmd[i].output_file!=NULL && cmd[i].append==1) {
+                int fd=open(cmd[i].input_file,O_WRONLY | O_CREAT | O_APPEND,0644);
+                dup2(fd,STDOUT_FILENO);
+                close(fd);
+            }
+            execvp(cmd[i].argv[0],cmd[i].argv);
+            perror("execvp");
+            exit(1);
+        }
+
+        waitpid(pid,NULL,0);
+    }
+    return 0;
+}
+
 int main() {
     while(1) {
         printf("zht-super-shell:");
         char now_path[1024];
-
+        int i,j,k;
         getcwd(now_path,sizeof(now_path));
         char *home=getenv("HOME");
         if(strncmp(now_path,home,strlen(home))==0) printf("~%s$ ",now_path+strlen(home));
         else printf("%s$ ",now_path);
-        struct Token *token=NULL;
-        size_t token_alloc=0;
 
-        char *input=NULL;
-        size_t len=0;
-        getline(&input,&len,stdin);
-        int l=strlen(input);
-        input[--l]='\0';
-        int i,j;
-        int k=0;
-        int yinhao=0;
-        for(i=0,j=0;i<l;i++) {
-            token=grow_alloc(j,&token_alloc,sizeof(struct Token),token);
-            if(input[i]=='"') {
-                if(yinhao==0) {
-                    yinhao=1;
-                    continue;
-                }
-                if(yinhao==1) {
-                    yinhao=0;
-                    continue;
-                }
-            }
-            if(input[i]=='>' && input[i+1]=='>' && yinhao==0) {
-                token[j++].type=REDIR_APPEND;
-                i++;
-                k=0;
-                continue;
-            } else if(input[i]=='|' && yinhao==0) {
-                token[j++].type=PIPE;
-                k=0;
-                continue;
-            } else if(input[i]=='<' && yinhao==0) {
-                token[j++].type=REDIR_IN;
-                k=0;
-                continue;
-            } else if(input[i]=='>' && yinhao==0) {
-                token[j++].type=REDIR_OUT;
-                k=0;
-                continue;
-            } else if(input[i]=='&' && yinhao==0) {
-                token[j++].type=BACK;
-                k=0;
-                continue;
-            }
-
-            if(input[i]==' ' && yinhao==0) {
-                k=0;
-                if(token[j].word!=NULL) {
-                    j++;
-                }
-
-                continue;
-            }
-            token[j].type=WORD;
-            token[j].word=grow_alloc(k,&token[j].alloc_word,sizeof(char),token[j].word);
-            token[j].word[k]=input[i];
-            k++;
+        int token_num;
+        struct Token *token=gettoken(&token_num);
+        if(token_num==1 && !strcmp("exit",token[0].word)) {
+            free(token[0].word);
+            free(token);
+            exit(0);
         }
+        int cmd_num;
+        struct command *cmd=getcmd(token,token_num,&cmd_num);
 
-        int token_num=++j;
-        free(input);
-        struct command *cmd;
-        size_t cmd_alloc=0;
-        cmd=grow_alloc(j,&cmd_alloc,sizeof(struct command),cmd);
-        for(i=0,j=0;i<token_num;i++) {
-            cmd=grow_alloc(j,&cmd_alloc,sizeof(struct command),cmd);
-            if(token[i].type==PIPE) {
-                j++;
-            } else if(token[i].type==REDIR_IN) {
-                int l=strlen(token[++i].word);
-                cmd[j].input_file=calloc(l+1,sizeof(char));
-                for(k=0;k<l;k++) {
-                    cmd[j].input_file[k]=token[i].word[k];
-                }
-            } else if(token[i].type==REDIR_OUT || token[i].type==REDIR_APPEND) {
-                int l=strlen(token[++i].word);
-                cmd[j].output_file=calloc(l+1,sizeof(char));
-                for(k=0;k<l;k++) {
-                    cmd[j].output_file[k]=token[i].word[k];
-                }
-                cmd[j].append=1;
-            } else if(token[i].type==WORD) {
-                if(cmd[j].argv==NULL) cmd[j].argv_alloc=0;
-                cmd[j].argv=grow_alloc(cmd[j].argc,&cmd[j].argv_alloc,sizeof(char*),cmd[j].argv);
-                k=0;
-                int l=strlen(token[i].word);
-                cmd[j].argv[cmd[j].argc]=calloc(l+1,sizeof(char));
-                for(k=0;k<l;k++) {
-                    cmd[j].argv[cmd[j].argc][k]=token[i].word[k];
-                }
-                cmd[j].argc++;
-            }
-        }
+        run_cmd(cmd,cmd_num);
 
         // for(i=0;i<token_num;i++) {
         //     if(token[i].word!=NULL) printf("%s\n",token[i].word);
@@ -158,7 +238,7 @@ int main() {
         //     printf("%d\n",token[i].type);
         // }
 
-        // for(i=0;i<=j;i++) {
+        // for(i=0;i<cmd_num;i++) {
         //     printf("cmd%d\n",i+1);
         //     for(k=0;k<cmd[i].argc;k++) {
         //         printf("%s\n",cmd[i].argv[k]);
@@ -167,6 +247,21 @@ int main() {
         //     if(cmd[i].output_file!=NULL) printf("out %s\n",cmd[i].output_file);
         //     printf("\n");
         // }
+
+        for(i=0;i<token_num;i++) {
+            if(token[i].word!=NULL) free(token[i].word);
+        }
+        free(token);
+
+        for(i=0;i<cmd_num;i++) {
+            for(k=0;k<cmd[i].argc;k++) {
+                free(cmd[i].argv[k]);
+            }
+            free(cmd[i].argv);
+            if(cmd[i].input_file!=NULL) free(cmd[i].input_file);
+            if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
+        }
+        free(cmd);
     }
     return 0;
 }
