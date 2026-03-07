@@ -1,3 +1,4 @@
+#define MAX_PATH 1024
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,12 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <termios.h>
+#include <pthread.h>
+#include <math.h>
+#include <readline/readline.h>
+#include <readline/history.h>
+
+double start;
 
 struct command {
     char **argv;
@@ -48,20 +55,11 @@ void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
     return g;
 }
 
-struct Token *gettoken(int *token_num) {
+struct Token *gettoken(char *input,int *token_num) {
     struct Token *token=NULL;
     size_t token_alloc=0;
 
-    char *input=NULL;
-    size_t len=0;
-    int l=getline(&input,&len,stdin);
-    if(l==-1) {
-        exit(0);
-    } else if(input[l-1]=='\n') {
-        input[--l]='\0';
-    } else {
-        printf("\n");
-    }
+    int l=strlen(input);
     int i,j;
     int k=0;
     int yinhao=0;
@@ -167,7 +165,7 @@ struct command *getcmd(struct Token *token,int token_num,int *cmd_num) {
             }
             cmd[j].argc++;
         }
-        if(!strcmp("ls",cmd[j].argv[0]) && isls==0) {
+        if(cmd[j].argv!=NULL && (!strcmp("ls",cmd[j].argv[0]) || !strcmp("grep",cmd[j].argv[0])) && isls==0) {
             cmd[j].argv[cmd[j].argc]=calloc(16,sizeof(char));
             strcpy(cmd[j].argv[cmd[j].argc++],"--color=auto");
             isls=1;
@@ -178,11 +176,25 @@ struct command *getcmd(struct Token *token,int token_num,int *cmd_num) {
 }
 
 int run_cmd(struct command *cmd,int cmd_num) {
-    int i;
+    int i,j;
+    int pipes[cmd_num][2];
+    if(cmd_num>1) {
+        for(j=0;j<cmd_num-1;j++) {
+            pipe(pipes[j]);
+        }
+    }
     for(i=0;i<cmd_num;i++) {
         pid_t pid=fork();
 
         if(pid==0) {
+            if(cmd_num>1) {
+                if(i>0) dup2(pipes[i-1][0],STDIN_FILENO);
+                if(i<cmd_num-1) dup2(pipes[i][1],STDOUT_FILENO);
+            }
+            for(j = 0; j < cmd_num - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
             if(cmd[i].input_file!=NULL) {
                 int fd=open(cmd[i].input_file,O_RDONLY);
                 if(fd==-1) {
@@ -214,29 +226,83 @@ int run_cmd(struct command *cmd,int cmd_num) {
             perror("execvp");
             exit(1);
         }
-
-        waitpid(pid,NULL,0);
+    }
+    for(i=0;i<cmd_num-1;i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+    for(i=0;i<cmd_num;i++) {
+        wait(NULL);
     }
     return 0;
 }
 
+void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b) {
+    float c = v * s;
+    float x = c * (1 - fabs(fmod(h / 60.0, 2) - 1));
+    float m = v - c;
+    float r1, g1, b1;
+
+    if(h >= 0 && h < 60)      { r1 = c; g1 = x; b1 = 0; }
+    else if(h < 120)          { r1 = x; g1 = c; b1 = 0; }
+    else if(h < 180)          { r1 = 0; g1 = c; b1 = x; }
+    else if(h < 240)          { r1 = 0; g1 = x; b1 = c; }
+    else if(h < 300)          { r1 = x; g1 = 0; b1 = c; }
+    else                      { r1 = c; g1 = 0; b1 = x; }
+
+    *r = (int)((r1 + m) * 255);
+    *g = (int)((g1 + m) * 255);
+    *b = (int)((b1 + m) * 255);
+}
+
+void get_colorful(char *prompt,const char *s) {
+    int i;
+    int len=strlen(s);
+    int n=0;
+    for(i=0;i<len;i++){
+        double h=((double)i/len*360);
+        int r,g,b;
+        hsv_to_rgb(h,1.0,1.0,&r,&g,&b);
+        int l=snprintf(prompt+n,MAX_PATH+512-n,"\001\033[38;2;%d;%d;%dm\002%c\001\033[0m\002",r,g,b,s[i]);
+        n=n+l;
+    }
+}
+
 int main() {
     while(1) {
-        printf("zht-super-shell:");
-        char now_path[1024];
         int i,j,k;
+        char prompt[MAX_PATH+512]={0};
+        get_colorful(prompt,"zht-super-shell");
+
+        char now_path[MAX_PATH];
         getcwd(now_path,sizeof(now_path));
         char *home=getenv("HOME");
-        if(strncmp(now_path,home,strlen(home))==0) printf("~%s$ ",now_path+strlen(home));
-        else printf("%s$ ",now_path);
+        if(strncmp(now_path,home,strlen(home))==0) {
+            int len=strlen(home);
+            char temp[MAX_PATH]="~";
+            for(i=0;i<strlen(now_path)-len;i++) {
 
+                temp[i+1]=now_path[len+i];
+            }
+            temp[i+1]=0;
+            strcpy(now_path,temp);
+        }
+        char temp[MAX_PATH+64];
+        snprintf(temp,sizeof(temp),":\033[1;34m%s\033[0m$ ",now_path);
+        strncat(prompt,temp,sizeof(prompt)-strlen(prompt)-1);
+
+        char *input=NULL;
+        input=readline(prompt);
+
+        if(strlen(input)==0) continue;
         int token_num;
-        struct Token *token=gettoken(&token_num);
+        struct Token *token=gettoken(input,&token_num);
         if(token_num==1 && !strcmp("exit",token[0].word)) {
             free(token[0].word);
             free(token);
             exit(0);
         }
+
         int cmd_num;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
 
@@ -258,7 +324,6 @@ int main() {
         //     printf("%d\n",cmd[i].append);
         //     printf("\n");
         // }
-
         for(i=0;i<token_num;i++) {
             if(token[i].word!=NULL) free(token[i].word);
         }
