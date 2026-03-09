@@ -58,6 +58,58 @@ void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
     return g;
 }
 
+void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b) {
+    float c = v * s;
+    float x = c * (1 - fabs(fmod(h / 60.0, 2) - 1));
+    float m = v - c;
+    float r1, g1, b1;
+
+    if(h >= 0 && h < 60)      { r1 = c; g1 = x; b1 = 0; }
+    else if(h < 120)          { r1 = x; g1 = c; b1 = 0; }
+    else if(h < 180)          { r1 = 0; g1 = c; b1 = x; }
+    else if(h < 240)          { r1 = 0; g1 = x; b1 = c; }
+    else if(h < 300)          { r1 = x; g1 = 0; b1 = c; }
+    else                      { r1 = c; g1 = 0; b1 = x; }
+
+    *r = (int)((r1 + m) * 255);
+    *g = (int)((g1 + m) * 255);
+    *b = (int)((b1 + m) * 255);
+}
+
+void get_colorful(char *prompt,const char *s) {
+    int i;
+    int len=strlen(s);
+    int n=0;
+    for(i=0;i<len;i++){
+        double h=(double)i/len*360;
+        int r,g,b;
+        hsv_to_rgb(h,1.0,1.0,&r,&g,&b);
+        int l=snprintf(prompt+n,MAX_PATH+512-n,"\001\033[38;2;%d;%d;%dm\002%c\001\033[0m\002",r,g,b,s[i]);
+        n=n+l;
+    }
+}
+
+void get_prompt(char *prompt) {
+    int i;
+    get_colorful(prompt,"zht-super-shell");
+
+    char now_path[MAX_PATH];
+    getcwd(now_path,sizeof(now_path));
+    char *home=getenv("HOME");
+    if(strncmp(now_path,home,strlen(home))==0) {
+        int len=strlen(home);
+        char temp[MAX_PATH]="~";
+        for(i=0;i<strlen(now_path)-len;i++) {
+            temp[i+1]=now_path[len+i];
+        }
+        temp[i+1]=0;
+        strcpy(now_path,temp);
+    }
+    char temp[MAX_PATH+64];
+    snprintf(temp,sizeof(temp),":\033[1;34m%s\033[0m$ ",now_path);
+    strncat(prompt,temp,sizeof(prompt)-strlen(prompt)-1);
+}
+
 struct Token *gettoken(char *input,int *token_num) {
     struct Token *token=NULL;
     size_t token_alloc=0;
@@ -244,18 +296,16 @@ int cd(char *str) {
     static struct oldcwd last_path={0};
     char t[MAX_PATH]={0};
     getcwd(t,sizeof(t));
-    if(strlen(str)==1) {
-        if(str[0]=='-') {
-            if(last_path.set==0) {
-                printf("cd: OLDPWD 未设定\n");
-                return -1;
-            } else {
-                printf("%s\n",last_path.path);
-                chdir(last_path.path);
-                strcpy(last_path.path,t);
-                last_path.set=1;
-                return 0;
-            }
+    if(strlen(str)==1 && str[0]=='-') {
+        if(last_path.set==0) {
+            printf("cd: OLDPWD 未设定\n");
+            return -1;
+        } else {
+            printf("%s\n",last_path.path);
+            chdir(last_path.path);
+            strcpy(last_path.path,t);
+            last_path.set=1;
+            return 0;
         }
     }
     if(str[0]=='~') {
@@ -277,35 +327,25 @@ int cd(char *str) {
     return 0;
 }
 
-void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b) {
-    float c = v * s;
-    float x = c * (1 - fabs(fmod(h / 60.0, 2) - 1));
-    float m = v - c;
-    float r1, g1, b1;
-
-    if(h >= 0 && h < 60)      { r1 = c; g1 = x; b1 = 0; }
-    else if(h < 120)          { r1 = x; g1 = c; b1 = 0; }
-    else if(h < 180)          { r1 = 0; g1 = c; b1 = x; }
-    else if(h < 240)          { r1 = 0; g1 = x; b1 = c; }
-    else if(h < 300)          { r1 = x; g1 = 0; b1 = c; }
-    else                      { r1 = c; g1 = 0; b1 = x; }
-
-    *r = (int)((r1 + m) * 255);
-    *g = (int)((g1 + m) * 255);
-    *b = (int)((b1 + m) * 255);
+void free_token(int token_num,struct Token *token) {
+    int i;
+    for(i=0;i<token_num;i++) {
+        if(token[i].word!=NULL) free(token[i].word);
+    }
+    free(token);
 }
 
-void get_colorful(char *prompt,const char *s) {
-    int i;
-    int len=strlen(s);
-    int n=0;
-    for(i=0;i<len;i++){
-        double h=(double)i/len*360;
-        int r,g,b;
-        hsv_to_rgb(h,1.0,1.0,&r,&g,&b);
-        int l=snprintf(prompt+n,MAX_PATH+512-n,"\001\033[38;2;%d;%d;%dm\002%c\001\033[0m\002",r,g,b,s[i]);
-        n=n+l;
+void free_cmd(int cmd_num,struct command *cmd) {
+    int i,j;
+    for(i=0;i<cmd_num;i++) {
+        for(j=0;j<cmd[i].argc;j++) {
+            free(cmd[i].argv[j]);
+        }
+        free(cmd[i].argv);
+        if(cmd[i].input_file!=NULL) free(cmd[i].input_file);
+        if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
     }
+    free(cmd);
 }
 
 int main() {
@@ -313,50 +353,37 @@ int main() {
     while(1) {
         int i,j,k;
         char prompt[MAX_PATH+512]={0};
-        get_colorful(prompt,"zht-super-shell");
-
-        char now_path[MAX_PATH];
-        getcwd(now_path,sizeof(now_path));
-        char *home=getenv("HOME");
-        if(strncmp(now_path,home,strlen(home))==0) {
-            int len=strlen(home);
-            char temp[MAX_PATH]="~";
-            for(i=0;i<strlen(now_path)-len;i++) {
-
-                temp[i+1]=now_path[len+i];
-            }
-            temp[i+1]=0;
-            strcpy(now_path,temp);
-        }
-        char temp[MAX_PATH+64];
-        snprintf(temp,sizeof(temp),":\033[1;34m%s\033[0m$ ",now_path);
-        strncat(prompt,temp,sizeof(prompt)-strlen(prompt)-1);
-
+        get_prompt(prompt);
         char *input=NULL;
         input=readline(prompt);
 
         if(strlen(input)==0) continue;
-        int token_num;
+        int token_num=0;
         struct Token *token=gettoken(input,&token_num);
         if(token_num==1 && !strcmp("exit",token[0].word)) {
-            free(token[0].word);
-            free(token);
+            free_token(token_num,token);
             exit(0);
         }
 
-        int cmd_num;
+        int cmd_num=0;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
-
+        free_token(token_num,token);
         if(cmd_num==1 && !strcmp("cd",cmd[0].argv[0])) {
             if(cmd[0].argc>2) {
                 printf("cd: 参数太多\n");
+                free_cmd(cmd_num,cmd);
                 continue;
             }
             cd(cmd[0].argv[1]);
+            free_cmd(cmd_num,cmd);
             continue;
         }
 
         run_cmd(cmd,cmd_num);
+        free_cmd(cmd_num,cmd);
+    }
+    return 0;
+}
 
         // for(i=0;i<token_num;i++) {
         //     if(token[i].word!=NULL) printf("%s\n",token[i].word);
@@ -374,20 +401,3 @@ int main() {
         //     printf("%d\n",cmd[i].append);
         //     printf("\n");
         // }
-        for(i=0;i<token_num;i++) {
-            if(token[i].word!=NULL) free(token[i].word);
-        }
-        free(token);
-
-        for(i=0;i<cmd_num;i++) {
-            for(k=0;k<cmd[i].argc;k++) {
-                free(cmd[i].argv[k]);
-            }
-            free(cmd[i].argv);
-            if(cmd[i].input_file!=NULL) free(cmd[i].input_file);
-            if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
-        }
-        free(cmd);
-    }
-    return 0;
-}
