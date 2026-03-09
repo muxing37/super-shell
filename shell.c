@@ -1,4 +1,3 @@
-#define MAX_PATH 1024
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +13,7 @@
 #include <math.h>
 #include <readline/readline.h>
 #include <readline/history.h>
-
-double start;
+#define MAX_PATH 1024
 
 struct command {
     char **argv;
@@ -24,6 +22,11 @@ struct command {
     char *input_file;
     char *output_file;
     int append;
+};
+
+struct oldcwd {
+    char path[MAX_PATH];
+    int set;
 };
 
 typedef enum{
@@ -237,6 +240,43 @@ int run_cmd(struct command *cmd,int cmd_num) {
     return 0;
 }
 
+int cd(char *str) {
+    static struct oldcwd last_path={0};
+    char t[MAX_PATH]={0};
+    getcwd(t,sizeof(t));
+    if(strlen(str)==1) {
+        if(str[0]=='-') {
+            if(last_path.set==0) {
+                printf("cd: OLDPWD 未设定\n");
+                return -1;
+            } else {
+                printf("%s\n",last_path.path);
+                chdir(last_path.path);
+                strcpy(last_path.path,t);
+                last_path.set=1;
+                return 0;
+            }
+        }
+    }
+    if(str[0]=='~') {
+        char temp[MAX_PATH]={0};
+        strcpy(temp,getenv("HOME"));
+        strcat(temp,str+1);
+        if(chdir(temp)==-1) {
+            perror("cd: ");
+        }
+        strcpy(last_path.path,t);
+        last_path.set=1;
+        return 0;
+    }
+    if(chdir(str)==-1) {
+        perror("cd: ");
+    }
+    strcpy(last_path.path,t);
+    last_path.set=1;
+    return 0;
+}
+
 void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b) {
     float c = v * s;
     float x = c * (1 - fabs(fmod(h / 60.0, 2) - 1));
@@ -260,7 +300,7 @@ void get_colorful(char *prompt,const char *s) {
     int len=strlen(s);
     int n=0;
     for(i=0;i<len;i++){
-        double h=((double)i/len*360);
+        double h=(double)i/len*360;
         int r,g,b;
         hsv_to_rgb(h,1.0,1.0,&r,&g,&b);
         int l=snprintf(prompt+n,MAX_PATH+512-n,"\001\033[38;2;%d;%d;%dm\002%c\001\033[0m\002",r,g,b,s[i]);
@@ -269,6 +309,7 @@ void get_colorful(char *prompt,const char *s) {
 }
 
 int main() {
+    chdir(getenv("HOME"));
     while(1) {
         int i,j,k;
         char prompt[MAX_PATH+512]={0};
@@ -305,6 +346,15 @@ int main() {
 
         int cmd_num;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
+
+        if(cmd_num==1 && !strcmp("cd",cmd[0].argv[0])) {
+            if(cmd[0].argc>2) {
+                printf("cd: 参数太多\n");
+                continue;
+            }
+            cd(cmd[0].argv[1]);
+            continue;
+        }
 
         run_cmd(cmd,cmd_num);
 
