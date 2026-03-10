@@ -15,6 +15,8 @@
 #include <readline/history.h>
 #define MAX_PATH 1024
 
+int running=0;
+
 struct command {
     char **argv;
     size_t argv_alloc;
@@ -56,6 +58,78 @@ void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
         }
     }
     return g;
+}
+
+//fg暂未实现
+void fg() {
+
+}
+
+int cd(char *str) {
+    static struct oldcwd last_path={0};
+    char t[MAX_PATH]={0};
+    getcwd(t,sizeof(t));
+    if(strlen(str)==1 && str[0]=='-') {
+        if(last_path.set==0) {
+            printf("cd: OLDPWD 未设定\n");
+            return -1;
+        } else {
+            printf("%s\n",last_path.path);
+            chdir(last_path.path);
+            strcpy(last_path.path,t);
+            last_path.set=1;
+            return 0;
+        }
+    }
+    if(str[0]=='~') {
+        char temp[MAX_PATH]={0};
+        strcpy(temp,getenv("HOME"));
+        strcat(temp,str+1);
+        if(chdir(temp)==-1) {
+            perror("cd: ");
+        }
+        strcpy(last_path.path,t);
+        last_path.set=1;
+        return 0;
+    }
+    if(chdir(str)==-1) {
+        perror("cd: ");
+    }
+    strcpy(last_path.path,t);
+    last_path.set=1;
+    return 0;
+}
+
+void handle_SIGINT() {
+    struct timespec stop;
+    stop.tv_sec=0;
+    stop.tv_nsec=2500000;
+    nanosleep(&stop,NULL);
+    printf("\n");
+    if(running==0) {
+        rl_replace_line("",0);
+        rl_on_new_line();
+        rl_redisplay();
+    }
+}
+
+void handle_SIGTSTP() {
+    if(running==1) {
+        printf("\n");
+        // rl_replace_line("",0);
+        // rl_on_new_line();
+        // rl_redisplay();
+    }
+}
+
+void handle_signal(){
+    signal(SIGINT,handle_SIGINT);
+    signal(SIGTSTP,handle_SIGTSTP);
+}
+
+void restore_signal() {
+    signal(SIGINT,SIG_DFL);
+    signal(SIGTSTP,SIG_DFL);
 }
 
 void hsv_to_rgb(float h, float s, float v, int *r, int *g, int *b) {
@@ -230,8 +304,10 @@ struct command *getcmd(struct Token *token,int token_num,int *cmd_num) {
     return cmd;
 }
 
-int run_cmd(struct command *cmd,int cmd_num) {
+int run_cmd(struct command *cmd,int cmd_num,int ifback) {
+    running=1;
     int i,j;
+    int status;
     int pipes[cmd_num][2];
     if(cmd_num>1) {
         for(j=0;j<cmd_num-1;j++) {
@@ -242,6 +318,7 @@ int run_cmd(struct command *cmd,int cmd_num) {
         pid_t pid=fork();
 
         if(pid==0) {
+            restore_signal();
             if(cmd_num>1) {
                 if(i>0) dup2(pipes[i-1][0],STDIN_FILENO);
                 if(i<cmd_num-1) dup2(pipes[i][1],STDOUT_FILENO);
@@ -287,43 +364,10 @@ int run_cmd(struct command *cmd,int cmd_num) {
         close(pipes[i][1]);
     }
     for(i=0;i<cmd_num;i++) {
-        wait(NULL);
+        //wait(NULL);
+        waitpid(-1,&status,WUNTRACED);
     }
-    return 0;
-}
-
-int cd(char *str) {
-    static struct oldcwd last_path={0};
-    char t[MAX_PATH]={0};
-    getcwd(t,sizeof(t));
-    if(strlen(str)==1 && str[0]=='-') {
-        if(last_path.set==0) {
-            printf("cd: OLDPWD 未设定\n");
-            return -1;
-        } else {
-            printf("%s\n",last_path.path);
-            chdir(last_path.path);
-            strcpy(last_path.path,t);
-            last_path.set=1;
-            return 0;
-        }
-    }
-    if(str[0]=='~') {
-        char temp[MAX_PATH]={0};
-        strcpy(temp,getenv("HOME"));
-        strcat(temp,str+1);
-        if(chdir(temp)==-1) {
-            perror("cd: ");
-        }
-        strcpy(last_path.path,t);
-        last_path.set=1;
-        return 0;
-    }
-    if(chdir(str)==-1) {
-        perror("cd: ");
-    }
-    strcpy(last_path.path,t);
-    last_path.set=1;
+    running=0;
     return 0;
 }
 
@@ -349,22 +393,37 @@ void free_cmd(int cmd_num,struct command *cmd) {
 }
 
 int main() {
+    handle_signal();
     chdir(getenv("HOME"));
     while(1) {
         int i,j,k;
+
         char prompt[MAX_PATH+512]={0};
         get_prompt(prompt);
         char *input=NULL;
         input=readline(prompt);
 
+        if(input==NULL) continue;
         if(strlen(input)==0) continue;
+        add_history(input);
         int token_num=0;
         struct Token *token=gettoken(input,&token_num);
         if(token_num==1 && !strcmp("exit",token[0].word)) {
             free_token(token_num,token);
             exit(0);
         }
-
+        int ifback=0;
+        for(i=0;i<token_num;i++) {
+            if(token[i].type==BACK && i!=token_num-1) {
+                printf("未预期的记号 \"&\" 附近有语法错误");
+                free_token(token_num,token);
+                break;
+            }
+            if(token[i].type==BACK && i==token_num-1) {
+                ifback=1;
+            }
+        }
+        if(token==NULL) continue;
         int cmd_num=0;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
         free_token(token_num,token);
@@ -379,25 +438,8 @@ int main() {
             continue;
         }
 
-        run_cmd(cmd,cmd_num);
+        run_cmd(cmd,cmd_num,ifback);
         free_cmd(cmd_num,cmd);
     }
     return 0;
 }
-
-        // for(i=0;i<token_num;i++) {
-        //     if(token[i].word!=NULL) printf("%s\n",token[i].word);
-        //     else printf("NULL\n");
-        //     printf("%d\n",token[i].type);
-        // }
-
-        // for(i=0;i<cmd_num;i++) {
-        //     printf("cmd%d\n",i+1);
-        //     for(k=0;k<cmd[i].argc;k++) {
-        //         printf("%s\n",cmd[i].argv[k]);
-        //     }
-        //     if(cmd[i].input_file!=NULL) printf("in %s\n",cmd[i].input_file);
-        //     if(cmd[i].output_file!=NULL) printf("out %s\n",cmd[i].output_file);
-        //     printf("%d\n",cmd[i].append);
-        //     printf("\n");
-        // }
