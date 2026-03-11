@@ -60,11 +60,6 @@ void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
     return g;
 }
 
-//fg暂未实现
-void fg() {
-
-}
-
 int cd(char *str) {
     static struct oldcwd last_path={0};
     char t[MAX_PATH]={0};
@@ -103,7 +98,7 @@ int cd(char *str) {
 void handle_SIGINT() {
     struct timespec stop;
     stop.tv_sec=0;
-    stop.tv_nsec=2500000;
+    stop.tv_nsec=2000000;
     nanosleep(&stop,NULL);
     printf("\n");
     if(running==0) {
@@ -122,9 +117,20 @@ void handle_SIGTSTP() {
     }
 }
 
+void handle_SIGCHLD() {
+    int status;
+    pid_t pid;
+    pid=waitpid(-1,&status,WNOHANG);
+    printf("%d\n",(int)pid);
+    rl_replace_line("",0);
+    rl_on_new_line();
+    rl_redisplay();
+}
+
 void handle_signal(){
     signal(SIGINT,handle_SIGINT);
     signal(SIGTSTP,handle_SIGTSTP);
+    signal(SIGCHLD,handle_SIGCHLD);
 }
 
 void restore_signal() {
@@ -154,7 +160,7 @@ void get_colorful(char *prompt,const char *s) {
     int i;
     int len=strlen(s);
     int n=0;
-    for(i=0;i<len;i++){
+    for(i=0;i<len;i++) {
         double h=(double)i/len*360;
         int r,g,b;
         hsv_to_rgb(h,1.0,1.0,&r,&g,&b);
@@ -184,15 +190,39 @@ void get_prompt(char *prompt) {
     strncat(prompt,temp,sizeof(prompt)-strlen(prompt)-1);
 }
 
+void free_token(int token_num,struct Token *token) {
+    int i;
+    for(i=0;i<token_num;i++) {
+        if(token[i].word!=NULL) free(token[i].word);
+    }
+    free(token);
+}
+
+void free_cmd(int cmd_num,struct command *cmd) {
+    int i,j;
+    for(i=0;i<cmd_num;i++) {
+        for(j=0;j<cmd[i].argc;j++) {
+            free(cmd[i].argv[j]);
+        }
+        free(cmd[i].argv);
+        if(cmd[i].input_file!=NULL) free(cmd[i].input_file);
+        if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
+    }
+    free(cmd);
+}
+
 struct Token *gettoken(char *input,int *token_num) {
     struct Token *token=NULL;
     size_t token_alloc=0;
-
     int l=strlen(input);
     int i,j;
     int k=0;
     int yinhao=0;
+    int ifspace=0;
+    int notword=0;
     for(i=0,j=0;i<l;i++) {
+        ifspace=0;
+        notword=0;
         token=grow_alloc(j,&token_alloc,sizeof(struct Token),token);
         if(input[i]=='"') {
             if(yinhao==0) {
@@ -211,6 +241,7 @@ struct Token *gettoken(char *input,int *token_num) {
             token[j++].type=REDIR_APPEND;
             i++;
             k=0;
+            notword=1;
             continue;
         } else if(input[i]=='|' && yinhao==0) {
             if(token[j].word!=NULL) {
@@ -218,6 +249,7 @@ struct Token *gettoken(char *input,int *token_num) {
             }
             token[j++].type=PIPE;
             k=0;
+            notword=1;
             continue;
         } else if(input[i]=='<' && yinhao==0) {
             if(token[j].word!=NULL) {
@@ -225,6 +257,7 @@ struct Token *gettoken(char *input,int *token_num) {
             }
             token[j++].type=REDIR_IN;
             k=0;
+            notword=1;
             continue;
         } else if(input[i]=='>' && yinhao==0) {
             if(token[j].word!=NULL) {
@@ -232,6 +265,7 @@ struct Token *gettoken(char *input,int *token_num) {
             }
             token[j++].type=REDIR_OUT;
             k=0;
+            notword=1;
             continue;
         } else if(input[i]=='&' && yinhao==0) {
             if(token[j].word!=NULL) {
@@ -239,6 +273,7 @@ struct Token *gettoken(char *input,int *token_num) {
             }
             token[j++].type=BACK;
             k=0;
+            ifspace=1;
             continue;
         }
 
@@ -247,6 +282,7 @@ struct Token *gettoken(char *input,int *token_num) {
             if(token[j].word!=NULL) {
                 j++;
             }
+            ifspace=1;
             continue;
         }
         token[j].type=WORD;
@@ -255,7 +291,15 @@ struct Token *gettoken(char *input,int *token_num) {
         k++;
     }
     free(input);
-    *token_num=++j;
+    if(ifspace) {
+        *token_num=j;
+    } else if(notword) {
+        *token_num=0;
+        free_token(--j,token);
+        printf("有语法错误\n");
+    } else{
+        *token_num=++j;
+    }
     return token;
 }
 
@@ -314,8 +358,9 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
             pipe(pipes[j]);
         }
     }
+    pid_t pid;
     for(i=0;i<cmd_num;i++) {
-        pid_t pid=fork();
+        pid=fork();
 
         if(pid==0) {
             restore_signal();
@@ -323,7 +368,7 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
                 if(i>0) dup2(pipes[i-1][0],STDIN_FILENO);
                 if(i<cmd_num-1) dup2(pipes[i][1],STDOUT_FILENO);
             }
-            for(j = 0; j < cmd_num - 1; j++) {
+            for(j=0;j<cmd_num-1; j++) {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
             }
@@ -333,7 +378,7 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
                     perror("open");
                     exit(1);
                 }
-                dup2(fd, STDIN_FILENO);
+                dup2(fd,STDIN_FILENO);
                 close(fd);
             }
             if(cmd[i].output_file!=NULL && cmd[i].append==0) {
@@ -363,67 +408,57 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
         close(pipes[i][0]);
         close(pipes[i][1]);
     }
-    for(i=0;i<cmd_num;i++) {
-        //wait(NULL);
-        waitpid(-1,&status,WUNTRACED);
+    if(!ifback) {
+        for(i=0;i<cmd_num;i++) {
+            waitpid(-1,&status,WUNTRACED);
+        }
+    }
+    if(ifback) {
+        printf("%d\n",(int)pid);
     }
     running=0;
     return 0;
-}
-
-void free_token(int token_num,struct Token *token) {
-    int i;
-    for(i=0;i<token_num;i++) {
-        if(token[i].word!=NULL) free(token[i].word);
-    }
-    free(token);
-}
-
-void free_cmd(int cmd_num,struct command *cmd) {
-    int i,j;
-    for(i=0;i<cmd_num;i++) {
-        for(j=0;j<cmd[i].argc;j++) {
-            free(cmd[i].argv[j]);
-        }
-        free(cmd[i].argv);
-        if(cmd[i].input_file!=NULL) free(cmd[i].input_file);
-        if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
-    }
-    free(cmd);
 }
 
 int main() {
     handle_signal();
     chdir(getenv("HOME"));
     while(1) {
+        int ifback=0;
         int i,j,k;
-
         char prompt[MAX_PATH+512]={0};
         get_prompt(prompt);
         char *input=NULL;
         input=readline(prompt);
-
         if(input==NULL) continue;
         if(strlen(input)==0) continue;
         add_history(input);
         int token_num=0;
         struct Token *token=gettoken(input,&token_num);
+        if(token_num==0) {
+            continue;
+        }
         if(token_num==1 && !strcmp("exit",token[0].word)) {
             free_token(token_num,token);
             exit(0);
         }
-        int ifback=0;
+        
         for(i=0;i<token_num;i++) {
-            if(token[i].type==BACK && i!=token_num-1) {
-                printf("未预期的记号 \"&\" 附近有语法错误");
+            if((token[i].type==BACK && i<token_num-1) || token[0].type==BACK) {
+                printf("未预期的记号 \"&\" 附近有语法错误\n");
                 free_token(token_num,token);
+                ifback=2;
                 break;
             }
             if(token[i].type==BACK && i==token_num-1) {
                 ifback=1;
+                token_num--;
             }
         }
-        if(token==NULL) continue;
+        if(token==NULL || ifback==2) {
+            ifback=0;
+            continue;
+        }
         int cmd_num=0;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
         free_token(token_num,token);
@@ -437,7 +472,6 @@ int main() {
             free_cmd(cmd_num,cmd);
             continue;
         }
-
         run_cmd(cmd,cmd_num,ifback);
         free_cmd(cmd_num,cmd);
     }
