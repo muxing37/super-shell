@@ -16,6 +16,7 @@
 #define MAX_PATH 1024
 
 int running=0;
+int back_count=0;
 
 struct command {
     char **argv;
@@ -45,6 +46,89 @@ struct Token {
     TokenType type;
     size_t alloc_word;
 };
+
+struct Back {
+    int num;
+    pid_t pid[64];
+    char cmd[512];
+    int pid_count;
+    struct Back *next;
+};
+
+struct Back *head;
+
+void Back_add(int token_num,struct Token *token,struct Back *head) {
+    int i;
+    int l=0;
+    struct Back *p=head;
+    if(p->next==NULL) {
+        p->next=calloc(1,sizeof(struct Back));
+        for(i=0;i<token_num;i++) {
+            if(token[i].word!=NULL) {
+                strcat(p->next->cmd,token[i].word);
+                l=l+strlen(token[i].word)+1;
+                if(i!=token_num-1) {
+                    p->next->cmd[l-1]=' ';
+                    p->next->cmd[l]='\0';
+                }
+            }
+        }
+        p->next->num=++back_count;
+        return;
+    }
+    while(p->next!=NULL) {
+        p=p->next;
+        if(p->next==NULL) {
+            p->next=calloc(1,sizeof(struct Back));
+            for(i=0;i<token_num;i++) {
+                if(token[i].word!=NULL) {
+                    strcat(p->next->cmd,token[i].word);
+                    l=l+strlen(token[i].word)+1;
+                    if(i!=token_num-1) {
+                        p->next->cmd[l-1]=' ';
+                        p->next->cmd[l]='\0';
+                    }
+                }
+            }
+            p->next->num=++back_count;
+            break;
+        }
+    }
+}
+
+void Back_delete(struct Back *head) {
+    struct Back *prev=head;
+    struct Back *cur=head->next;
+    struct Back *temp;
+    while(cur!=NULL) {
+        temp=cur->next;
+        if(cur->pid_count==0){
+            prev->next=cur->next;
+            printf("[%d] 已完成    %s\n",cur->num,cur->cmd);
+            free(cur);
+        }
+        prev=cur;
+        cur=temp;
+    }
+}
+
+void pid_change(int mod,pid_t pid,struct Back *head) {
+    int i;
+    int found=0;
+    struct Back *p=head->next;
+    while(1) {
+        if(p==NULL) return;
+        for(i=0;i<p->pid_count;i++) {
+            if(pid==p->pid[i]) {
+                if(mod==0) p->pid_count--;
+                if(mod==1) p->pid_count++;
+                found=1;
+                break;
+            }
+        }
+        p=p->next;
+    }
+}
 
 void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
     if(c>*a-4 || *a==0) {
@@ -121,10 +205,7 @@ void handle_SIGCHLD() {
     int status;
     pid_t pid;
     pid=waitpid(-1,&status,WNOHANG);
-    printf("%d\n",(int)pid);
-    rl_replace_line("",0);
-    rl_on_new_line();
-    rl_redisplay();
+    pid_change(0,pid,head);
 }
 
 void handle_signal(){
@@ -290,7 +371,6 @@ struct Token *gettoken(char *input,int *token_num) {
         token[j].word[k]=input[i];
         k++;
     }
-    free(input);
     if(ifspace) {
         *token_num=j;
     } else if(notword) {
@@ -300,6 +380,7 @@ struct Token *gettoken(char *input,int *token_num) {
     } else{
         *token_num=++j;
     }
+    free(input);
     return token;
 }
 
@@ -403,6 +484,7 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
             perror("execvp");
             exit(1);
         }
+        if(ifback) pid_change(1,pid,head);
     }
     for(i=0;i<cmd_num-1;i++) {
         close(pipes[i][0]);
@@ -414,7 +496,7 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
         }
     }
     if(ifback) {
-        printf("%d\n",(int)pid);
+        printf("[%d] %d\n",back_count,(int)pid);
     }
     running=0;
     return 0;
@@ -423,6 +505,7 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
 int main() {
     handle_signal();
     chdir(getenv("HOME"));
+    head=calloc(1,sizeof(struct Back));
     while(1) {
         int ifback=0;
         int i,j,k;
@@ -430,6 +513,7 @@ int main() {
         get_prompt(prompt);
         char *input=NULL;
         input=readline(prompt);
+        if(back_count!=0) Back_delete(head);
         if(input==NULL) continue;
         if(strlen(input)==0) continue;
         add_history(input);
@@ -459,6 +543,8 @@ int main() {
             ifback=0;
             continue;
         }
+        if(ifback==1) Back_add(token_num,token,head);
+
         int cmd_num=0;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
         free_token(token_num,token);
