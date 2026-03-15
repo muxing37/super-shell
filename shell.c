@@ -51,25 +51,40 @@ struct Back {
     int num;
     pid_t pid[64];
     char cmd[512];
+    int finished;
     int pid_count;
     struct Back *next;
 };
 
 struct Back *head;
 
-void Back_add(int token_num,struct Token *token,struct Back *head) {
+void Back_add(int token_num,struct Token *token) {
     int i;
     int l=0;
     struct Back *p=head;
     if(p->next==NULL) {
         p->next=calloc(1,sizeof(struct Back));
         for(i=0;i<token_num;i++) {
-            if(token[i].word!=NULL) {
+            if(token[i].type==WORD) {
                 strcat(p->next->cmd,token[i].word);
                 l=l+strlen(token[i].word)+1;
                 if(i!=token_num-1) {
                     p->next->cmd[l-1]=' ';
                     p->next->cmd[l]='\0';
+                }
+            } else {
+                if(token[i].type==REDIR_APPEND) {
+                    strcat(p->next->cmd,">> ");
+                    l=l+3;
+                } else if(token[i].type==PIPE) {
+                    strcat(p->next->cmd,"| ");
+                    l=l+2;
+                } else if(token[i].type==REDIR_IN) {
+                    strcat(p->next->cmd,"< ");
+                    l=l+2;
+                } else if(token[i].type==REDIR_OUT) {
+                    strcat(p->next->cmd,"> ");
+                    l=l+2;
                 }
             }
         }
@@ -81,12 +96,26 @@ void Back_add(int token_num,struct Token *token,struct Back *head) {
         if(p->next==NULL) {
             p->next=calloc(1,sizeof(struct Back));
             for(i=0;i<token_num;i++) {
-                if(token[i].word!=NULL) {
+                if(token[i].type==WORD) {
                     strcat(p->next->cmd,token[i].word);
                     l=l+strlen(token[i].word)+1;
                     if(i!=token_num-1) {
                         p->next->cmd[l-1]=' ';
                         p->next->cmd[l]='\0';
+                    }
+                } else {
+                    if(token[i].type==REDIR_APPEND) {
+                        strcat(p->next->cmd,">> ");
+                        l=l+3;
+                    } else if(token[i].type==PIPE) {
+                        strcat(p->next->cmd,"| ");
+                        l=l+2;
+                    } else if(token[i].type==REDIR_IN) {
+                        strcat(p->next->cmd,"< ");
+                        l=l+2;
+                    } else if(token[i].type==REDIR_OUT) {
+                        strcat(p->next->cmd,"> ");
+                        l=l+2;
                     }
                 }
             }
@@ -96,23 +125,25 @@ void Back_add(int token_num,struct Token *token,struct Back *head) {
     }
 }
 
-void Back_delete(struct Back *head) {
+void Back_delete() {
     struct Back *prev=head;
     struct Back *cur=head->next;
     struct Back *temp;
     while(cur!=NULL) {
         temp=cur->next;
-        if(cur->pid_count==0){
+        if(cur->pid_count==cur->finished){
             prev->next=cur->next;
             printf("[%d] 已完成    %s\n",cur->num,cur->cmd);
             free(cur);
+            cur=temp;
+        } else {
+            prev=cur;
+            cur=temp;
         }
-        prev=cur;
-        cur=temp;
     }
 }
 
-void pid_change(int mod,pid_t pid,struct Back *head) {
+void pid_delete(pid_t pid) {
     int i;
     int found=0;
     struct Back *p=head->next;
@@ -120,14 +151,26 @@ void pid_change(int mod,pid_t pid,struct Back *head) {
         if(p==NULL) return;
         for(i=0;i<p->pid_count;i++) {
             if(pid==p->pid[i]) {
-                if(mod==0) p->pid_count--;
-                if(mod==1) p->pid_count++;
+                p->finished++;
                 found=1;
                 break;
             }
         }
         p=p->next;
     }
+}
+
+void pid_add(pid_t *pid,int cmd_num) {
+    int i;
+    struct Back *p=head->next;
+    while(p->next!=NULL) {
+        p=p->next;
+    }
+    for(i=0;i<cmd_num;i++) {
+        p->pid[i]=pid[i];
+    }
+    p->pid_count=cmd_num;
+    p->finished=0;
 }
 
 void* grow_alloc(size_t c,size_t *a,size_t size,void *g) {
@@ -205,7 +248,7 @@ void handle_SIGCHLD() {
     int status;
     pid_t pid;
     pid=waitpid(-1,&status,WNOHANG);
-    pid_change(0,pid,head);
+    pid_delete(pid);
 }
 
 void handle_signal(){
@@ -290,6 +333,16 @@ void free_cmd(int cmd_num,struct command *cmd) {
         if(cmd[i].output_file!=NULL) free(cmd[i].output_file);
     }
     free(cmd);
+}
+
+void free_back() {
+    struct Back *p=head->next;
+    free(head);
+    while(p!=NULL) {
+        struct Back *t=p->next;
+        free(p);
+        p=t;
+    }
 }
 
 struct Token *gettoken(char *input,int *token_num) {
@@ -380,7 +433,7 @@ struct Token *gettoken(char *input,int *token_num) {
     } else{
         *token_num=++j;
     }
-    free(input);
+    //free(input);
     return token;
 }
 
@@ -439,11 +492,11 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
             pipe(pipes[j]);
         }
     }
-    pid_t pid;
+    pid_t pid[cmd_num];
     for(i=0;i<cmd_num;i++) {
-        pid=fork();
-
-        if(pid==0) {
+        pid[i]=fork();
+        
+        if(pid[i]==0) {
             restore_signal();
             if(cmd_num>1) {
                 if(i>0) dup2(pipes[i-1][0],STDIN_FILENO);
@@ -484,7 +537,6 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
             perror("execvp");
             exit(1);
         }
-        if(ifback) pid_change(1,pid,head);
     }
     for(i=0;i<cmd_num-1;i++) {
         close(pipes[i][0]);
@@ -496,7 +548,8 @@ int run_cmd(struct command *cmd,int cmd_num,int ifback) {
         }
     }
     if(ifback) {
-        printf("[%d] %d\n",back_count,(int)pid);
+        printf("[%d] %d\n",back_count,(int)pid[cmd_num-1]);
+        pid_add(pid,cmd_num);
     }
     running=0;
     return 0;
@@ -512,21 +565,39 @@ int main() {
         char prompt[MAX_PATH+512]={0};
         get_prompt(prompt);
         char *input=NULL;
+
         input=readline(prompt);
-        if(back_count!=0) Back_delete(head);
-        if(input==NULL) continue;
-        if(strlen(input)==0) continue;
+
+        // printf("%s",prompt);
+        // input=calloc(1024,sizeof(char));
+        // fgets(input,1024,stdin);
+        // printf("%s",input);
+        // input[strlen(input)-1]=0;
+
+        if(back_count!=0) Back_delete();
+        if(input==NULL) {
+            free(input);
+            continue;
+        }
+        if(strlen(input)==0) {
+            free(input);
+            continue;
+        }
         add_history(input);
         int token_num=0;
         struct Token *token=gettoken(input,&token_num);
+        free(input);
         if(token_num==0) {
             continue;
         }
         if(token_num==1 && !strcmp("exit",token[0].word)) {
+            signal(SIGCHLD,SIG_IGN);
             free_token(token_num,token);
+            free_back();
+            rl_clear_history();
             exit(0);
         }
-        
+
         for(i=0;i<token_num;i++) {
             if((token[i].type==BACK && i<token_num-1) || token[0].type==BACK) {
                 printf("未预期的记号 \"&\" 附近有语法错误\n");
@@ -543,7 +614,7 @@ int main() {
             ifback=0;
             continue;
         }
-        if(ifback==1) Back_add(token_num,token,head);
+        if(ifback==1) Back_add(token_num,token);
 
         int cmd_num=0;
         struct command *cmd=getcmd(token,token_num,&cmd_num);
